@@ -24,8 +24,9 @@ const (
 
 // Consumer allows you to create and connect to queues for data consumption.
 type Consumer struct {
-	chManager *channelManager
+	chManager *ChannelManager
 	logger    Logger
+	notify    chan error
 }
 
 // ConsumerOptions are used to describe a consumer's configuration.
@@ -48,20 +49,45 @@ type Delivery struct {
 func NewConsumer(url string, config amqp.Config, optionFuncs ...func(*ConsumerOptions)) (Consumer, error) {
 	options := &ConsumerOptions{
 		Logging:           true,
-		Logger:            &stdLogger{},
+		Logger:            &StdLogger{},
 		ReconnectInterval: time.Second * 5,
 	}
 	for _, optionFunc := range optionFuncs {
 		optionFunc(options)
 	}
 
-	chManager, err := newChannelManager(url, config, options.Logger, options.ReconnectInterval)
+	chManager, err := NewChannelManager(url, config, options.Logger, options.ReconnectInterval)
 	if err != nil {
 		return Consumer{}, err
 	}
+
+	notify := make(chan error)
+	chManager.addNotify(notify)
 	consumer := Consumer{
 		chManager: chManager,
 		logger:    options.Logger,
+		notify:    notify,
+	}
+	return consumer, nil
+}
+
+// NewConsumerWithChannel returns a new Consumer reuse exist channel
+func NewConsumerWithChannel(chManager *ChannelManager, optionFuncs ...func(*ConsumerOptions)) (Consumer, error) {
+	options := &ConsumerOptions{
+		Logging:           true,
+		Logger:            chManager.Logger,
+		ReconnectInterval: chManager.ReconnectInterval,
+	}
+	for _, optionFunc := range optionFuncs {
+		optionFunc(options)
+	}
+
+	notify := make(chan error)
+	chManager.addNotify(notify)
+	consumer := Consumer{
+		chManager: chManager,
+		logger:    options.Logger,
+		notify:    notify,
 	}
 	return consumer, nil
 }
@@ -74,10 +100,10 @@ func WithConsumerOptionsReconnectInterval(reconnectInterval time.Duration) func(
 	}
 }
 
-// WithConsumerOptionsLogging sets a logger to log to stdout
+// WithConsumerOptionsLogging sets a Logger to log to stdout
 func WithConsumerOptionsLogging(options *ConsumerOptions) {
 	options.Logging = true
-	options.Logger = &stdLogger{}
+	options.Logger = &StdLogger{}
 }
 
 // WithConsumerOptionsLogger sets logging to a custom interface.
@@ -116,7 +142,7 @@ func (consumer Consumer) StartConsuming(
 	}
 
 	go func() {
-		for err := range consumer.chManager.notifyCancelOrClose {
+		for err := range consumer.notify {
 			consumer.logger.Printf("successful recovery from: %v", err)
 			err = consumer.startGoroutines(
 				handler,

@@ -37,7 +37,7 @@ type Confirmation struct {
 
 // Publisher allows you to publish messages safely across an open connection
 type Publisher struct {
-	chManager *channelManager
+	chManager *ChannelManager
 
 	notifyReturnChan  chan Return
 	notifyPublishChan chan Confirmation
@@ -46,6 +46,7 @@ type Publisher struct {
 	disablePublishDueToFlowMux *sync.RWMutex
 
 	options PublisherOptions
+	notify  chan error
 }
 
 // PublisherOptions are used to describe a publisher's configuration.
@@ -67,7 +68,7 @@ func WithPublisherOptionsReconnectInterval(reconnectInterval time.Duration) func
 // WithPublisherOptionsLogging sets logging to true on the consumer options
 func WithPublisherOptionsLogging(options *PublisherOptions) {
 	options.Logging = true
-	options.Logger = &stdLogger{}
+	options.Logger = &StdLogger{}
 }
 
 // WithPublisherOptionsLogger sets logging to a custom interface.
@@ -87,18 +88,20 @@ func WithPublisherOptionsLogger(log Logger) func(options *PublisherOptions) {
 func NewPublisher(url string, config amqp.Config, optionFuncs ...func(*PublisherOptions)) (*Publisher, error) {
 	options := &PublisherOptions{
 		Logging:           true,
-		Logger:            &stdLogger{},
+		Logger:            &StdLogger{},
 		ReconnectInterval: time.Second * 5,
 	}
 	for _, optionFunc := range optionFuncs {
 		optionFunc(options)
 	}
 
-	chManager, err := newChannelManager(url, config, options.Logger, options.ReconnectInterval)
+	chManager, err := NewChannelManager(url, config, options.Logger, options.ReconnectInterval)
 	if err != nil {
 		return nil, err
 	}
 
+	notify := make(chan error)
+	chManager.addNotify(notify)
 	publisher := &Publisher{
 		chManager:                  chManager,
 		disablePublishDueToFlow:    false,
@@ -106,6 +109,36 @@ func NewPublisher(url string, config amqp.Config, optionFuncs ...func(*Publisher
 		options:                    *options,
 		notifyReturnChan:           nil,
 		notifyPublishChan:          nil,
+		notify:                     notify,
+	}
+
+	go publisher.startNotifyFlowHandler()
+
+	go publisher.handleRestarts()
+
+	return publisher, nil
+}
+
+func NewPublisherWithChannel(chManager *ChannelManager, optionFuncs ...func(*PublisherOptions)) (*Publisher, error) {
+	options := &PublisherOptions{
+		Logging:           true,
+		Logger:            chManager.Logger,
+		ReconnectInterval: chManager.ReconnectInterval,
+	}
+	for _, optionFunc := range optionFuncs {
+		optionFunc(options)
+	}
+
+	notify := make(chan error)
+	chManager.addNotify(notify)
+	publisher := &Publisher{
+		chManager:                  chManager,
+		disablePublishDueToFlow:    false,
+		disablePublishDueToFlowMux: &sync.RWMutex{},
+		options:                    *options,
+		notifyReturnChan:           nil,
+		notifyPublishChan:          nil,
+		notify:                     notify,
 	}
 
 	go publisher.startNotifyFlowHandler()
@@ -116,7 +149,7 @@ func NewPublisher(url string, config amqp.Config, optionFuncs ...func(*Publisher
 }
 
 func (publisher *Publisher) handleRestarts() {
-	for err := range publisher.chManager.notifyCancelOrClose {
+	for err := range publisher.notify {
 		publisher.options.Logger.Printf("successful publisher recovery from: %v", err)
 		go publisher.startNotifyFlowHandler()
 		if publisher.notifyReturnChan != nil {

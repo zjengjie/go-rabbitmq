@@ -13,9 +13,9 @@ type Logger interface {
 
 const loggingPrefix = "gorabbit"
 
-// stdLogger logs to stdout using go's default logger.
-type stdLogger struct{}
+// StdLogger logs to stdout using go's default Logger.
+type StdLogger struct{}
 
-func (l stdLogger) Printf(format string, v ...interface{}) {
+func (l StdLogger) Printf(format string, v ...interface{}) {
 	log.Printf(fmt.Sprintf("%s: %s", loggingPrefix, format), v...)
 }
