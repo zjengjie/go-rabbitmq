@@ -134,3 +134,11 @@ func (chManager *ChannelManager) close() error {
 	}
 	return nil
 }
+
+func (chManager *ChannelManager) Channel() *amqp.Channel {
+	return chManager.channel
+}
+
+func (chManager *ChannelManager) Connection() *amqp.Connection {
+	return chManager.connection
+}
